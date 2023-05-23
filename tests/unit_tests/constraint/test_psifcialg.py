@@ -7,8 +7,9 @@ import pandas as pd
 import pooch
 import pytest
 import pywhy_graphs as pgraphs
-from pywhy_graphs import IPAG, PsiPAG
+from pywhy_graphs import AugmentedPAG
 from pywhy_graphs.export import numpy_to_graph
+from pywhy_graphs.testing import assert_mixed_edge_graphs_isomorphic
 
 from dodiscover import InterventionalContextBuilder, PsiFCI, make_context
 from dodiscover.ci import GSquareCITest, Oracle
@@ -39,7 +40,7 @@ class Test_IFCI(Test_FCI):
         sub_dir_graph = nx.complete_graph(
             [("F", 0), ("F", 1), "a", "b", "c", "d"], create_using=nx.DiGraph
         )
-        G = IPAG(incoming_circle_edges=sub_dir_graph)
+        G = AugmentedPAG(incoming_circle_edges=sub_dir_graph)
 
         # there must only be one kind of edge from F-nodes to its nbrs
         f_nodes = [("F", 0), ("F", 1)]
@@ -64,7 +65,7 @@ class Test_IFCI(Test_FCI):
             ("w", "y"),
         ]
         circle_edges = [("y", "x"), ("x", "z"), ("y", "z"), ("y", "w")]
-        G = IPAG(incoming_directed_edges=directed_edges, incoming_circle_edges=circle_edges)
+        G = AugmentedPAG(incoming_directed_edges=directed_edges, incoming_circle_edges=circle_edges)
         G.graph["F-nodes"][("F", 0)] = ["x"]
         f_nodes = G.f_nodes
 
@@ -150,7 +151,7 @@ class Test_IFCI(Test_FCI):
             ("w", "y"),
         ]
         circle_edges = [("x", "z"), ("y", "z"), ("y", "w")]
-        expected_G = IPAG(
+        expected_G = AugmentedPAG(
             incoming_directed_edges=directed_edges, incoming_circle_edges=circle_edges
         )
         expected_G.graph["F-nodes"][("F", 0)] = ["x"]
@@ -237,7 +238,7 @@ class Test_PsiFCI(Test_IFCI):
             ("y", "w"),
         ]
         circle_edges = [("x", "z"), ("w", "x"), ("w", "z"), ("w", "y")]
-        expected_G = PsiPAG(
+        expected_G = AugmentedPAG(
             incoming_directed_edges=directed_edges, incoming_circle_edges=circle_edges
         )
         expected_G.graph["F-nodes"][("F", 0)] = ["x"]
@@ -245,6 +246,70 @@ class Test_PsiFCI(Test_IFCI):
         learned_graph = learner.graph_
         for edge_type, subgraph in expected_G.get_graphs().items():
             assert nx.is_isomorphic(subgraph, learned_graph.get_graphs(edge_type))
+
+
+def test_sachs():
+    expected_pag = AugmentedPAG()
+    expected_pag.add_edges_from(
+        [
+            ("Plcg", "PIP2"),
+            ("Plcg", "PIP3"),
+            ("PIP3", "PIP2"),
+            ("PKC", "Jnk"),
+            ("P38", "PKC"),
+            ("P38", "Jnk"),
+            ("Mek", "Raf"),
+        ],
+        edge_type=expected_pag.directed_edge_name,
+    )
+    expected_pag.add_edges_from(
+        [
+            ("Akt", "Erk"),
+            ("Erk", "PKA"),
+        ],
+        edge_type=expected_pag.bidirected_edge_name,
+    )
+    expected_pag.add_edges_from(
+        [
+            ("Raf", "Mek"),
+            ("PKC", "P38"),
+            ("Jnk", "P38"),
+        ],
+        edge_type=expected_pag.circle_edge_name,
+    )
+
+    # use pooch to download robustly from a url
+    url = "https://www.bnlearn.com/book-crc/code/sachs.interventional.txt.gz"
+    file_path = pooch.retrieve(
+        url=url,
+        known_hash="md5:39ee257f7eeb94cb60e6177cf80c9544",
+    )
+
+    df = pd.read_csv(file_path, delimiter=" ")
+
+    # only use the observational data
+    unique_ints = df["INT"].unique()
+    intervention_targets = [df.columns[idx] for idx in unique_ints]
+
+    # get the list of intervention targets and list of dataframe associated with each intervention
+    data_cols = [col for col in df.columns if col != "INT"]
+    data = []
+    for interv_idx in unique_ints:
+        _data = df[df["INT"] == interv_idx][data_cols]
+        data.append(_data)
+
+    ci_estimator = GSquareCITest(data_type="discrete")
+    alpha = 0.05
+    learner = PsiFCI(ci_estimator=ci_estimator, cd_estimator=ci_estimator, alpha=alpha)
+    ctx_builder = make_context(create_using=InterventionalContextBuilder)
+    ctx = (
+        ctx_builder.variables(observed=data_cols)
+        .intervention_targets(intervention_targets)
+        .obs_distribution(False)
+        .build()
+    )
+    learner.fit(data, ctx)
+    assert_mixed_edge_graphs_isomorphic(learner.graph_, expected_pag)
 
 
 @pytest.mark.skip()

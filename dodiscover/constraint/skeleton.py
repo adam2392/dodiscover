@@ -23,9 +23,10 @@ logger = logging.getLogger()
 
 
 def _parallel_test_xy_edges(
-    conditional_test_func: Callable[
-        [pd.DataFrame, Column, Column, Optional[Set[Column]]], Tuple[float, float]
+    parallel_fun: Callable[
+        [pd.DataFrame, Callable, Column, Column, Optional[Set[Column]]], Tuple[float, float]
     ],
+    conditional_test_func: Callable[[Column, Column, Optional[Set[Column]]], Tuple[float, float]],
     x_var: Column,
     y_var: Column,
     alpha: float,
@@ -33,6 +34,8 @@ def _parallel_test_xy_edges(
     max_combinations: Optional[int],
     possible_variables: Set[Column],
     data: pd.DataFrame,
+    context: Context,
+    cross_distribution_test: bool = False,
 ) -> Dict[str, Any]:
     """Private function used to test edge between X and Y in parallel for candidate separating sets.
 
@@ -82,9 +85,27 @@ def _parallel_test_xy_edges(
         if max_combinations is not None and comb_idx >= max_combinations:
             break
 
+        # either process within-distribution, or across distributions
+        this_data = data
+        if cross_distribution_test:
+            # compute conditional independence test
+            # get the sigma-map for this F-node
+            distribution_idx = context.sigma_map[x_var]
+
+            # get the distributions across the two distributions
+            data_i = data[distribution_idx[0]].copy()
+            data_j = data[distribution_idx[1]].copy()
+
+            # name the group column the F-node, so Oracle works as expected
+            data_i[x_var] = 0
+            data_j[x_var] = 1
+            this_data = pd.concat((data_i, data_j), axis=0)
+
         try:
             # compute conditional independence test
-            test_stat, pvalue = conditional_test_func(data, x_var, y_var, set(cond_set))
+            test_stat, pvalue = parallel_fun(
+                this_data, conditional_test_func, x_var, y_var, set(cond_set)
+            )
         except Exception as e:
             print(e)
             test_stat = np.inf
@@ -105,6 +126,97 @@ def _parallel_test_xy_edges(
     result["test_stat"] = test_stat
     result["pvalue"] = pvalue
     return result
+
+
+def candidate_cond_sets(
+    condsel_method: ConditioningSetSelection,
+    context: Context,
+    x_var: Column,
+    y_var: Column,
+    keep_sorted: bool = False,
+):
+    """Compute candidate conditioning set using a specific method between two variables.
+
+    Parameters
+    ----------
+    condsel_method : ConditioningSetSelection
+        Method to compute candidate conditioning set.
+    context : Context
+        Causal context object with the graph and other information.
+    x_var : Column
+        The starting node.
+    y_var : Column
+        The ending node.
+    keep_sorted : bool, optional
+        Whether or not to keep the conditioning set sorted based on the context, by default False.
+
+    Returns
+    -------
+    possible_variables : Set[Column]
+        A set of variables that are candidates for the conditioning set.
+
+    Notes
+    -----
+    The possible variables are determined by the method used to compute the candidate
+    conditioning set. For example:
+     - if the method is 'complete', then all variables in the graph are possible candidates.
+     - if the method is 'neighbors', then only the neighbors of the starting node are possible
+       candidates.
+     - if the method is 'neighbors_path', then only the neighbors of the starting node that are
+       also along a path to the ending node are possible candidates.
+     - if the method is 'pds', then the possible candidates are determined by the
+       PAG that computes the possibly d-separating set.
+     - if the method is 'pds_path', then the possible candidates are determined by the
+       PAG that computes the possibly d-separating set, but only those that are along a path to the
+       ending node are possible candidates.
+    """
+    if condsel_method == ConditioningSetSelection.COMPLETE:
+        possible_variables = set(context.init_graph.nodes)
+    elif condsel_method == ConditioningSetSelection.NBRS:
+        possible_variables = set(context.init_graph.neighbors(x_var))
+        # possible_adjacencies.copy()
+    elif condsel_method == ConditioningSetSelection.NBRS_PATH:
+        # constrain adjacency set to ones with a path from x_var to y_var
+        possible_variables = _find_neighbors_along_path(context.init_graph, start=x_var, end=y_var)
+    elif condsel_method == ConditioningSetSelection.PDS:
+        import pywhy_graphs as pgraph
+
+        pag = context.state_variable("PAG", on_missing="ignore")
+        max_path_length = context.state_variable("max_path_length")
+
+        # determine how we want to construct the candidates for separating nodes
+        # perform conditioning independence testing on all combinations
+        possible_variables = pgraph.pds(
+            pag, x_var, y_var, max_path_length=max_path_length  # type: ignore
+        )
+    elif condsel_method == ConditioningSetSelection.PDS_PATH:
+        import pywhy_graphs as pgraph
+
+        pag = context.state_variable("PAG", on_missing="ignore")
+        max_path_length = context.state_variable("max_path_length")
+
+        # determine how we want to construct the candidates for separating nodes
+        # perform conditioning independence testing on all combinations
+        possible_variables = pgraph.pds_path(
+            pag, x_var, y_var, max_path_length=max_path_length  # type: ignore
+        )
+
+    if keep_sorted:
+        # Note it is assumed in public API that 'test_stat' is set
+        # inside the adj_graph
+        possible_variables = sorted(
+            possible_variables,
+            key=lambda n: context.init_graph.edges[x_var, n]["test_stat"],
+            reverse=True,
+        )  # type: ignore
+
+    if x_var in possible_variables:
+        possible_variables.remove(x_var)
+    if y_var in possible_variables:
+        possible_variables.remove(y_var)
+
+    return possible_variables
+
 
 
 def _iter_conditioning_set(
@@ -223,8 +335,14 @@ class BaseSkeletonLearner:
         self,
         data: pd.DataFrame,
         context: Context,
-        conditional_test_func: Callable,
+        condsel_method: ConditioningSetSelection,
+        conditional_test_func: Callable[[Column, Column, Set[Column]], Tuple[float, float]],
         possible_x_nodes=None,
+        skipped_y_nodes=None,
+        skipped_z_nodes=None,
+        cross_distribution_test: bool = False,
+        group_with_snode=None,
+        debug: bool = False,
     ):
         """Core function for learning the skeleton of a causal graph.
 
@@ -238,12 +356,26 @@ class BaseSkeletonLearner:
             The data to learn the causal graph from.
         context : Context
             A context object.
+        condsel_method : ConditioningSetSelection
+            Method to compute candidate conditioning set.
         conditional_test_func : Callable
             The conditional test function that takes in three arguments 'x_var', 'y_var'
             and an optional 'z_var', where 'z_var' is the conditioning set of variables.
         possible_x_nodes : set of nodes, optional
             The nodes to initialize as X variables. How to initialize variables to test in
             the second loop of the algorithm. See Notes for details.
+        skipped_y_nodes : set of nodes, optional
+            The nodes to skip in choosing the Y variable. See Notes for details.
+        skipped_z_nodes : set of nodes, optional
+            The nodes to skip in choosing the conditioning set. See Notes for details.
+        cross_distribution_test : bool, optional
+            Whether to perform cross-distribution tests. If True, then the ``context``
+            object must contain a ``sigma_map`` attribute that maps each X-node
+            to the corresponding distributions of interest.
+        cross_domain_test : bool, optional
+            Whether to perform cross-domain tests. If True, then the ``context``
+            object must contain a ``domain_map`` attribute that maps each X-node
+            to the corresponding domains of interest.
 
         Notes
         -----
@@ -286,14 +418,14 @@ class BaseSkeletonLearner:
             pairs is less than the size of 'size_cond_set', or if the 'max_cond_set_size' is
             reached.
         """
-        # preserve state of the Context object
-        self.context_ = context
-
-        # get the initialized graph
-        adj_graph: Graph = deepcopy(context.init_graph.copy())
-
+        # get the initialized graph and do not make a copy, since we will be modifying it
+        # in place in the context object
         if possible_x_nodes is None:
-            possible_x_nodes = adj_graph.nodes
+            possible_x_nodes = context.init_graph.nodes
+        if skipped_y_nodes is None:
+            skipped_y_nodes = set()
+        if skipped_z_nodes is None:
+            skipped_z_nodes = set()
 
         # the size of the conditioning set will start off at the minimum
         size_cond_set = self.min_cond_set_size_
@@ -318,9 +450,14 @@ class BaseSkeletonLearner:
             # wrt which edges are removed at each process of the algorithm
             remove_edges = set()
 
-            if self.n_jobs == 1:
+            if self.n_jobs == 1 or self.n_jobs is None:
                 for x_var, y_var, possible_variables in self._generate_pairs_with_sepset(
-                    possible_x_nodes, adj_graph, context, size_cond_set
+                    possible_x_nodes,
+                    context,
+                    condsel_method,
+                    size_cond_set,
+                    skipped_y_nodes,
+                    skipped_z_nodes,
                 ):
                     # generate iterator through the conditioning sets
                     conditioning_sets = _iter_conditioning_set(
@@ -340,17 +477,37 @@ class BaseSkeletonLearner:
                         ):
                             break
 
-                        try:
+                        # either process within-distribution, or across distributions
+                        this_data = data
+                        if cross_distribution_test:
                             # compute conditional independence test
-                            test_stat, pvalue = conditional_test_func(
-                                data, x_var, y_var, set(cond_set)
+                            # get the sigma-map for this F-node
+                            distribution_idx = context.sigma_map[x_var]
+
+                            # get the distributions across the two distributions
+                            data_i = data[distribution_idx[0]].copy()
+                            data_j = data[distribution_idx[1]].copy()
+
+                            # name the group column the F-node, so Oracle works as expected
+                            data_i[x_var] = 0
+                            data_j[x_var] = 1
+                            this_data = pd.concat((data_i, data_j), axis=0)
+
+                            if group_with_snode is not None:
+                                old_xvar = x_var
+                                x_var = {x_var, group_with_snode}
+                        try:
+                            test_stat, pvalue = self.evaluate_edge(
+                                this_data, conditional_test_func, x_var, y_var, set(cond_set)
                             )
                         except Exception as e:
                             # allow us to catch exceptions that are due to not enough samples
                             # if so, we cannot remove the edge and just proceed
-                            print(e)
                             test_stat = np.inf
                             pvalue = 0.0
+
+                        if debug:
+                            print(f'Comparing {x_var}-{y_var} | {cond_set} : {pvalue}')
 
                         # if any "independence" is found through inability to reject
                         # the null hypothesis, then we will break the loop comparing X and Y
@@ -359,7 +516,11 @@ class BaseSkeletonLearner:
                             break
 
                     # post-process the CI test results
-                    self._postprocess_ci_test(adj_graph, x_var, y_var, test_stat, pvalue)
+                    if group_with_snode is not None:
+                        self._postprocess_ci_test(context, group_with_snode, y_var, test_stat, pvalue)
+                        self._postprocess_ci_test(context, old_xvar, y_var, test_stat, pvalue)
+                    else:
+                        self._postprocess_ci_test(context, x_var, y_var, test_stat, pvalue)
 
                     # two variables found to be independent given a separating set
                     if pvalue > self.alpha:
@@ -373,6 +534,7 @@ class BaseSkeletonLearner:
                 # run parallelized loop
                 out = Parallel(n_jobs=self.n_jobs)(
                     delayed(_parallel_test_xy_edges)(
+                        self.evaluate_edge,
                         conditional_test_func,
                         x_var,
                         y_var,
@@ -381,9 +543,15 @@ class BaseSkeletonLearner:
                         self.max_combinations_,
                         possible_variables,
                         data,
+                        context,
                     )
                     for x_var, y_var, possible_variables in self._generate_pairs_with_sepset(
-                        possible_x_nodes, adj_graph, context, size_cond_set
+                        possible_x_nodes,
+                        context,
+                        condsel_method,
+                        size_cond_set,
+                        skipped_y_nodes,
+                        skipped_z_nodes,
                     )
                 )
 
@@ -395,7 +563,7 @@ class BaseSkeletonLearner:
                     cond_set = result["cond_set"]
 
                     # post-process the CI test results
-                    self._postprocess_ci_test(adj_graph, x_var, y_var, test_stat, pvalue)
+                    self._postprocess_ci_test(context, x_var, y_var, test_stat, pvalue)
 
                     # two variables found to be independent given a separating set
                     if pvalue > self.alpha:
@@ -413,7 +581,7 @@ class BaseSkeletonLearner:
             # Remove non-significant links
             # Note: Removing edges at the end ensures "stability" of the algorithm
             # with respect to the randomness choice of pairs of edges considered in the inner loop
-            adj_graph.remove_edges_from(remove_edges)
+            context.init_graph.remove_edges_from(remove_edges)
 
             # increment the conditioning set size
             size_cond_set += 1
@@ -422,11 +590,17 @@ class BaseSkeletonLearner:
             if size_cond_set > self.max_cond_set_size_ or self._cont is False:
                 break
 
-        self.adj_graph_ = adj_graph
+        self.adj_graph_ = context.init_graph
         self.n_iters_ += 1
 
     def _generate_pairs_with_sepset(
-        self, possible_x_nodes: Set[Column], adj_graph: Graph, context: Context, size_cond_set: int
+        self,
+        possible_x_nodes: Set[Column],
+        context: Context,
+        condsel_method: ConditioningSetSelection,
+        size_cond_set: int,
+        skipped_y_nodes: Set[Column],
+        skipped_z_nodes: Set[Column],
     ) -> Generator[Tuple[Column, Column, Set[Column]], None, None]:
         """Generate X, Y and Z pairs for conditional testing.
 
@@ -434,12 +608,17 @@ class BaseSkeletonLearner:
         ----------
         possible_x_nodes : Set[Column]
             Nodes that we want to test edges of.
-        adj_graph : Graph
-            The graph encoding adjacencies and current state of the learned undirected graph.
         context : Context
-            The causal context.
+            The causal context. Must containt the graph encoding adjacencies and current
+            state of the learned undirected graph.
+        condsel_method : ConditioningSetSelection
+            The method to use for selecting conditioning sets.
         size_cond_set : int
             The current size of the conditioning set to consider.
+        skipped_y_nodes : Set[Column]
+            Allow one to skip Y-nodes that are not of interest in learning edge structure.
+        skipped_z_nodes : Set[Column]
+            Allow one to skip Z-nodes that are not able to be conditioned on.
 
         Yields
         ------
@@ -447,25 +626,39 @@ class BaseSkeletonLearner:
             Generates 'X' variable, 'Y' variable and canddiate 'Z' (i.e. possible separating set
             variables).
         """
+        # keep a memoization of (x_var, y_var) pairs we have already seen
+        seen_pairs = set()
+
         # loop through every node that we want to test
         for x_var in possible_x_nodes:
-            possible_adjacencies = set(adj_graph.neighbors(x_var))
+            possible_adjacencies = set(context.init_graph.neighbors(x_var))
             logger.info(f"Considering node {x_var}...\n\n")
 
             for y_var in possible_adjacencies:
+                # ignore any nodes we do not want to consider's X-Y edges of
+                if y_var in skipped_y_nodes:
+                    continue
+
+                # prevent yielding the same edge pair twice
+                if (x_var, y_var) in seen_pairs or (y_var, x_var) in seen_pairs:
+                    continue
+
                 # a node cannot be a parent to itself in DAGs
                 if y_var == x_var:
                     continue
 
+                # leverage prior knowledge to skip edges if they are included
                 if (x_var, y_var) in context.included_edges.edges:
                     continue
 
                 # compute the possible variables used in the conditioning set
-                possible_variables = self._compute_candidate_conditioning_sets(
-                    adj_graph,
-                    x_var,
-                    y_var,
+                possible_variables = candidate_cond_sets(
+                    condsel_method, context, x_var, y_var, keep_sorted=self.keep_sorted
                 )
+
+                # remove nodes that are not allowed to be conditioned on
+                # XXX: if used, this may result in improper graphs learned even in oracle setting
+                possible_variables = possible_variables.difference(skipped_z_nodes)
 
                 logger.debug(
                     f"Adj({x_var}) without {y_var} with size={len(possible_adjacencies) - 1} "
@@ -483,6 +676,8 @@ class BaseSkeletonLearner:
                     continue
                 else:
                     self._cont = True
+
+                seen_pairs.add((x_var, y_var))
                 yield x_var, y_var, possible_variables
 
     def _compute_candidate_conditioning_sets(
@@ -1196,7 +1391,7 @@ class LearnInterventionSkeleton(LearnSemiMarkovianSkeleton):
     experimental distribution dataset, or one may not know the explicit targets. If the
     interventional targets are known, then the skeleton discovery algorithm of
     :footcite:`Kocaoglu2019characterization` is used. That is we learn the skeleton of a
-    IPAG. Otherwise, we will not know the intervention targets, and use the skeleton discovery
+    AugmentedPAG. Otherwise, we will not know the intervention targets, and use the skeleton discovery
     algorithm described in :footcite:`Jaber2020causal`. To define intervention targets, one
     must use the :class:`dodiscover.InterventionalContextBuilder`.
 

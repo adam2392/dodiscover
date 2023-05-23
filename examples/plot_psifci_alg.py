@@ -126,13 +126,13 @@ print(f"There are {len(est_pag.to_undirected().edges)} edges in the resulting PA
 # %%
 # Visualize the full graph including the F-node
 dot_graph = draw(est_pag, direction="LR")
-dot_graph.render(outfile="psi_pag_full.png", view=True)
+dot_graph.render(outfile="psi_pag_full.png", view=True, cleanup=True)
 
 # %%
 # Visualize the graph without the F-nodes
 est_pag_no_fnodes = est_pag.subgraph(ctx.get_non_f_nodes())
 dot_graph = draw(est_pag_no_fnodes, direction="LR")
-dot_graph.render(outfile="psi_pag.png", view=True)
+dot_graph.render(outfile="psi_pag.png", view=True, cleanup=True)
 
 # Interpretation
 # --------------

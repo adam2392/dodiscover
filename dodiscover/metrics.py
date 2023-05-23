@@ -84,6 +84,97 @@ def confusion_matrix_networks(
     return conf_mat
 
 
+def structure_hamming_dist_ec(true_graph: NetworkxGraph, pred_graph: NetworkxGraph, double_for_anticausal: bool = True
+) -> float:
+    """Compute structural hamming distance given EC structures.
+
+    The Structural Hamming Distance (SHD) is a standard distance to compare
+    graphs by their adjacency matrix. It consists in computing the difference
+    between the two (binary) adjacency matrixes: every edge that is either
+    missing or not in the target graph is counted as a mistake. Note that
+    for directed graph, two mistakes can be counted as the edge in the wrong
+    direction is false and the edge in the good direction is missing; the
+    ``double_for_anticausal`` argument accounts for this remark. Setting it to
+    `False` will count this as a single mistake.
+
+    Moreover, this function generalizes this to allow comparisons among ECs. For example,
+    for a PAG, we can compare the undirected edges, bidirected edges, and directed edges
+    and edges with circle endpoints.
+
+    Parameters
+    ----------
+    true_graph : instance of nx.Graph or nx.DiGraph
+        The true graph as an instance of a MixedEdgeGraph with only one type of
+        edge.
+    pred_graph : instance of nx.Graph or nx.DiGraph
+        The predicted graph. The predicted graph and true graph must be
+        the same type.
+    double_for_anticausal : bool, optional
+        Whether to count incorrect orientations as two mistakes, by default True
+
+    Returns
+    -------
+    shd : float
+        The hamming distance between 0 and infinity.
+
+    Notes
+    -----
+    SHD is only well defined if you have a graph with only undirected edges,
+    or directed edges. That is, we only consider a Bayesian network, or a causal
+    DAG as candidates. If there are more than one type of edge within
+    the network, then SHD can be called on a sub-graph of that edge type. For example,
+    say you would like to compare a PAG, where there are directed, undirected, bidirected
+    and edges with circular endpoints. Currently, there is no known way of comparing
+    two PAGs systematically. Therefore, one can compare PAGs via the number of circle
+    edges, or the SHD of the undirected, bidirected, directed edge subgraphs.
+    """
+    # get the order of the nodes
+    idx = np.argsort(true_graph.nodes)
+    other_idx = np.argsort(pred_graph.nodes)
+
+    # convert graphs to adjacency matrix in numpy array format
+    adj_mat = nx.to_numpy_array(true_graph.to_undirected())[np.ix_(idx, idx)]
+    other_adj_mat = nx.to_numpy_array(pred_graph.to_undirected())[np.ix_(other_idx, other_idx)]
+
+    # first get the adjacency matrix for the undirected edges
+    diff = np.abs(adj_mat - other_adj_mat)
+
+    # now go through indices where they do match
+    # shd_sum = 0.0
+    # seed_edge_pairs = set()
+    # for i, j in zip(*np.where(diff == 0)):
+    #     edge_pair = frozenset([i, j])
+    #     # circular endpoint i *-o j
+    #     if pred_graph.has_edge(i, j, pred_graph.circle_edge_name):
+    #         # if there is an arrowhead, or tail, then we count as one we need to orient
+    #         continue
+    #         # if true_graph.has_edge(i, j) or true_graph.has_edge(j, i):
+    #         #     shd_sum += 1
+    #     elif pred_graph.has_edge(i, j, pred_graph.directed_edge_name):
+    #         if not true_graph.has_edge(i, j):
+    #             shd_sum += 1
+    #         elif true_graph.has_edge(j, i):
+    #             if double_for_anticausal:
+    #                 shd_sum += 2
+    #             else:
+    #                 shd_sum += 1
+    #     elif pred_graph.has_edge(i, j, pred_graph.bidirected_edge_name) and edge_pair not in seed_edge_pairs:
+    #         # if not true_graph.has_edge(i, j):
+    #         #     shd_sum += 1
+    #         shd_sum += 1
+    #         # seed_edge_pairs.add(edge_pair)
+    #     elif pred_graph.has_edge(i, j, pred_graph.undirected_edge_name):
+    #         raise RuntimeError(f'Undirected edges not implemented yet.')
+        
+    shd_sum = 0.0
+    for (i, j) in pred_graph.sub_directed_graph().edges:
+        if not true_graph.has_edge(i, j):
+            shd_sum += 2
+    
+    return shd_sum
+    
+
+
 def structure_hamming_dist(
     true_graph: NetworkxGraph, pred_graph: NetworkxGraph, double_for_anticausal: bool = True
 ) -> float:

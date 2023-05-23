@@ -48,10 +48,21 @@ Constraint-based structure learning
    LearnSkeleton
    LearnSemiMarkovianSkeleton
    LearnInterventionSkeleton
-   ConditioningSetSelection
    PC
    FCI
    PsiFCI
+
+Constraint-based causal discovery in general follows the structure of the graph
+to determine how candidate conditioning sets are chosen. The following functions
+and classes are relevant for choosing the conditioning sets at every step of
+constraint-based algorithms.
+
+.. currentmodule:: dodiscover.constraint
+.. autosummary::
+   :toctree: generated/
+
+   ConditioningSetSelection
+   candidate_cond_sets
 
 Comparing causal discovery algorithms
 =====================================

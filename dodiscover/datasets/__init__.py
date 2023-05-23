@@ -1,1 +1,1 @@
-from .linear import make_linear_gaussian
+from .base import sample_from_graph

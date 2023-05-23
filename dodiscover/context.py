@@ -9,7 +9,15 @@ from .base import BasePyWhy
 from .typing import Column
 
 
-@dataclass(eq=True, frozen=True)
+# TODO: we should try to make the thing frozen
+# - this would require easy copying of the Context into a new context
+# - but resetting e.g. only say one variable like the init_graph
+# - IDEAS: perhaps add a function `new_context = copy_context(context, **kwargs)`
+# - where kwargs are the things to change.
+@dataclass(
+    eq=True,
+    # frozen=True
+)
 class Context(BasePyWhy):
     """Context of assumptions, domain knowledge and data.
 
@@ -87,6 +95,16 @@ class Context(BasePyWhy):
     # sigma-map mapping F-nodes to their distribution indices
     sigma_map: Dict[Any, Tuple] = field(default_factory=dict)
     f_nodes: List = field(default_factory=list)
+
+    ########################################################
+    # for general multi-domain data
+    ########################################################
+    # the number of domains we expect to have access to
+    num_domains: int = field(default=1)
+
+    # map each augmented node to a tuple of domains (e.g. (0, 1), or (1,))
+    domain_map: Dict[Any, Tuple] = field(default_factory=dict)
+    s_nodes: List = field(default_factory=list)
 
     def add_state_variable(self, name: str, var: Any) -> "Context":
         """Add a state variable.

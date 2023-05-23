@@ -328,6 +328,7 @@ class InterventionalContextBuilder(ContextBuilder):
     """
 
     _intervention_targets: Optional[List[Tuple[Column]]] = None
+    _mechanisms: Optional[List[Dict]] = None
     _num_distributions: Optional[int] = None
     _obs_distribution: bool = True
 
@@ -372,6 +373,10 @@ class InterventionalContextBuilder(ContextBuilder):
         """
         self._intervention_targets = targets
         return self
+    
+    def mechanisms(self, mechanisms: List[Dict[Column, List[Column]]]):
+        self._mechanisms = mechanisms
+        return self
 
     def build(self) -> Context:
         """Build the Context object.
@@ -395,6 +400,10 @@ class InterventionalContextBuilder(ContextBuilder):
             intervention_targets = []
         else:
             intervention_targets = self._intervention_targets
+        if self._mechanisms is None:
+            mechanisms = []
+        else:
+            mechanisms = self._mechanisms
         if self._num_distributions is None:
             num_distributions = int(self._obs_distribution) + len(intervention_targets)
         else:
@@ -410,7 +419,7 @@ class InterventionalContextBuilder(ContextBuilder):
 
         # get F-nodes and sigma-map
         f_nodes, sigma_map, symmetric_diff_map = self._create_augmented_nodes(
-            intervention_targets, num_distributions
+            intervention_targets, num_distributions, mechanisms
         )
         graph_variables = set(self._observed_variables).union(set(f_nodes))
 
@@ -431,7 +440,7 @@ class InterventionalContextBuilder(ContextBuilder):
         )
 
     def _create_augmented_nodes(
-        self, intervention_targets, num_distributions
+        self, intervention_targets, num_distributions, mechanisms
     ) -> Tuple[List, Dict, Dict]:
         """Create augmented nodes, sigma map and optionally a symmetric difference map.
 
@@ -486,9 +495,30 @@ class InterventionalContextBuilder(ContextBuilder):
                 i_target: Set = set(targets[jdx])
                 j_target: Set = set(targets[kdx])
 
+                diff_mechanism_targets = set()
+                if len(mechanisms) > 0:
+                    # get the mechanisms for the intervention targets (target: mechanism_id)
+                    i_mechanisms = mechanisms[jdx]
+                    j_mechanisms = mechanisms[kdx]
+
+                    # get all mechanisms with the same target overlap to check if they
+                    # have different mechanisms
+                    same_target_mechanisms = i_target.intersection(j_target)
+                    for target in same_target_mechanisms:
+                        # if mechanism is not the same, then remove from targets
+                        if i_mechanisms[target] != j_mechanisms[target]:
+                            i_target.remove(target)
+                            j_target.remove(target)
+                        
+                            diff_mechanism_targets.add(target)
+
+                    # get the mechanism targets of the symmetric difference
+                    i_target = set(i_target.symmetric_difference(j_target))
+
                 # form symmetric difference and store its frozenset
                 # (so that way order is not important)
                 f_node_targets = frozenset(i_target.symmetric_difference(j_target))
+                f_node_targets = f_node_targets.union(diff_mechanism_targets)
                 symmetric_diff_map[f_node] = f_node_targets
         return augmented_nodes, sigma_map, symmetric_diff_map
 

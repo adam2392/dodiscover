@@ -63,11 +63,11 @@ class BaseConditionalDiscrepancyTest(metaclass=ABCMeta):
     def test(
         self,
         df: pd.DataFrame,
-        y_vars: Set[Column],
         group_col: Set[Column],
+        y_vars: Set[Column],
         x_vars: Set[Column],
     ) -> Tuple[float, float]:
-        """Abstract method for all conditional discrepancy tests.
+        """Method for conditional discrepancy test.
 
         Tests the null hypothesis: :math:`P(Y | X, group) = P(Y | X)`, where
         we are trying to determine if Y is (conditionally) independent from
@@ -81,11 +81,11 @@ class BaseConditionalDiscrepancyTest(metaclass=ABCMeta):
         ----------
         df : pd.DataFrame
             The dataframe containing the dataset.
-        y_vars : Set of column
-            A column in ``df``.
         group_col : column
             A column in ``df`` that indicates which group of distribution
             each sample belongs to with a '0', or '1'.
+        y_vars : Set of column
+            A column in ``df``.
         x_vars : Set of column, optional
             A column in ``df``.
 

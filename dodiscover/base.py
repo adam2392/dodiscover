@@ -2,8 +2,12 @@ import inspect
 import warnings
 from collections import defaultdict
 from copy import deepcopy
+from typing import Optional
+
+import pandas as pd
 
 from ._version import __version__
+from .typing import SeparatingSet
 
 
 class InconsistentVersionWarning(UserWarning):
@@ -192,3 +196,17 @@ class BasePyWhy:
             super().__setstate__(state)
         except AttributeError:
             self.__dict__.update(state)
+
+
+class ConstraintMixin:
+    _learner_type = "constraint"
+
+    def learn_skeleton(self, data: pd.DataFrame, context, sep_set: Optional[SeparatingSet] = None):
+        pass
+
+
+class ScoreMixin:
+    _learner_type = "score"
+
+    def score(self, data: pd.DataFrame, context, metric: str):
+        pass

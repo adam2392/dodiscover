@@ -720,7 +720,7 @@ class BaseSkeletonLearner:
 
     def _postprocess_ci_test(
         self,
-        adj_graph: nx.Graph,
+        context: Context,
         x_var: Column,
         y_var: Column,
         test_stat: float,
@@ -747,10 +747,10 @@ class BaseSkeletonLearner:
         """
         # keep track of the smallest test statistic, meaning the highest pvalue
         # meaning the "most" independent. keep track of the maximum pvalue as well
-        if pvalue > adj_graph.edges[x_var, y_var]["pvalue"]:
-            adj_graph.edges[x_var, y_var]["pvalue"] = pvalue
-        if test_stat < adj_graph.edges[x_var, y_var]["test_stat"]:
-            adj_graph.edges[x_var, y_var]["test_stat"] = test_stat
+        if pvalue > context.init_graph.edges[x_var, y_var]["pvalue"]:
+            context.init_graph.edges[x_var, y_var]["pvalue"] = pvalue
+        if test_stat < context.init_graph.edges[x_var, y_var]["test_stat"]:
+            context.init_graph.edges[x_var, y_var]["test_stat"] = test_stat
 
     def _summarize_xy_comparison(
         self, x_var: Column, y_var: Column, removed_edge: bool, pvalue: float
@@ -1016,6 +1016,7 @@ class LearnSkeleton(BaseSkeletonLearner):
         self._learn_skeleton(
             data,
             context=self.context_,
+            condsel_method=self.condsel_method,
             conditional_test_func=self.evaluate_edge,
         )
 
@@ -1558,6 +1559,8 @@ class LearnInterventionSkeleton(LearnSemiMarkovianSkeleton):
         self._learn_skeleton(
             data=interv_data,
             context=self.context_,
+            condsel_method=self.condsel_method,
+            second_stage_condsel_method=self.second_stage_condsel_method,
             conditional_test_func=self.evaluate_fnode_edge,
             possible_x_nodes=list(self.context_.f_nodes),
         )
@@ -1581,6 +1584,7 @@ class LearnInterventionSkeleton(LearnSemiMarkovianSkeleton):
         self._learn_skeleton(
             data=obs_data,
             context=obs_context,
+            condsel_method=self.condsel_method,
             conditional_test_func=self.evaluate_edge,
             possible_x_nodes=list(adj_graph.nodes),
         )
